@@ -9,7 +9,23 @@ script:
           message: "Temperature is {{ states('sensor.temperature') | float - 1.0 }}°C"
           entity_id: sensor.temperature
           domain: temperature
-      - event: SVP_AIR
+      - event: LOGBOOK_ENTRY
         event_data:
-          name: Calculate_SVP
-          message: "SVP is {{ (0.61078 * 10 ** ((7.5 * (states('sensor.temperature') | float - 1,0)) / (237.3 + (states('sensor.temperature') | float - 1,0)))) | round(2) }} hPa"
+          name: Calculate_SVP_Leaf
+          entity_id: sensor.temperature
+          message: "SVP_AIR is {{ (0.61078 * ((17.2694 * (states('sensor.temperature') | float - 1.0)) / (237.3 + (states('sensor.temperature') | float - 1.0))) | exp | round(4)) }} kPa"
+      - event: LOGBOOK_ENTRY
+        event_data:
+          name: Calculate_SVP_Air
+          entity_id: sensor.temperature
+          message: "SVP_Air is {{ (0.61078 * ((17.2694 * (states('sensor.temperature')| float) / (237.3 + (states('sensor.temperature') | float ))) | exp | round(4)) }} kPa"
+      - event: LOGBOOK_ENTRY
+        event_data:
+          name: Jinja2Event
+          entity_id: sensor.temperature
+          message: >
+            {% set temp = states('sensor.temperature') | float %}
+            {% set svp_air = 0.61078 * ((17.2694 * temp) / (237.3 + temp)) | exp }
+            {% set svp_leaf = 0.61078 * ((17.2694 * (temp - 1.0)) / (237.3 + (temp - 1.0))) | exp }
+            {% set rh_target = ((svp_leaf - VPD_target)/(svp_air)) * 100 %}
+            rh_target is {{ rh_target }} %
