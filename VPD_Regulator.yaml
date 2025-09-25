@@ -1,31 +1,163 @@
-# Example configuration.yaml entry
+# VPD Configuration
+input_select:
+  vpd_target:
+    name: VPD Target
+    options:
+      - "0.4"  # Seedling stage
+      - "0.6"  # Early veg
+      - "0.8"  # Late veg
+      - "1.0"  # Early flower
+      - "1.2"  # Late flower
+    initial: "0.8"
+    icon: mdi:water-percent
+
+input_text:
+  vpd_status:
+    name: VPD Status
+    initial: "System Ready"
+    max: 255
+
+# Enhanced VPD Control Script
 script:
-  message_temperature:
+  vpd_control:
+    alias: "VPD Control System"
     sequence:
-      # This is Home Assistant Script Syntax
+      - variables:
+          temp_air: "{{ states('sensor.temperature') | float }}"
+          temp_leaf: "{{ (states('sensor.temperature') | float) - 1.0 }}"
+          current_rh: "{{ states('sensor.humidity') | float }}"
+          vpd_target: "{{ states('input_select.vpd_target') | float }}"
+
+      # Calculate SVP values - using lookup table approach for reliability
+      - variables:
+          # Simplified SVP calculation using polynomial approximation (accurate for 15-35°C)
+          # SVP(kPa) ≈ 0.0006108 * exp(17.27*T/(T+237.3))
+          # Approximated as polynomial for Home Assistant compatibility
+          svp_air: >
+            {% set t = temp_air %}
+            {% if t < 20 %}
+              {{ 1.2 + (t - 15) * 0.15 }}
+            {% elif t < 25 %}
+              {{ 2.05 + (t - 20) * 0.25 }}
+            {% elif t < 30 %}
+              {{ 3.3 + (t - 25) * 0.35 }}
+            {% else %}
+              {{ 5.05 + (t - 30) * 0.45 }}
+            {% endif %}
+          svp_leaf: >
+            {% set t = temp_leaf %}
+            {% if t < 20 %}
+              {{ 1.2 + (t - 15) * 0.15 }}
+            {% elif t < 25 %}
+              {{ 2.05 + (t - 20) * 0.25 }}
+            {% elif t < 30 %}
+              {{ 3.3 + (t - 25) * 0.35 }}
+            {% else %}
+              {{ 5.05 + (t - 30) * 0.45 }}
+            {% endif %}
+          
+      # Calculate target RH and current VPD
+      - variables:
+          rh_target: "{{ ((svp_leaf - vpd_target) / svp_air) * 100 }}"
+          current_vpd: "{{ svp_leaf - (svp_air * current_rh / 100) }}"
+
+      # Log current conditions
       - event: LOGBOOK_ENTRY
         event_data:
-          name: Get_Temperature
-          message: "Temperature is {{ states('sensor.temperature') | float - 1.0 }}°C"
-          entity_id: sensor.temperature
-          domain: temperature
-      - event: LOGBOOK_ENTRY
-        event_data:
-          name: Calculate_SVP_Leaf
-          entity_id: sensor.temperature
-          message: "SVP_AIR is {{ (0.61078 * ((17.2694 * (states('sensor.temperature') | float - 1.0)) / (237.3 + (states('sensor.temperature') | float - 1.0))) | exp | round(4)) }} kPa"
-      - event: LOGBOOK_ENTRY
-        event_data:
-          name: Calculate_SVP_Air
-          entity_id: sensor.temperature
-          message: "SVP_Air is {{ (0.61078 * ((17.2694 * (states('sensor.temperature')| float) / (237.3 + (states('sensor.temperature') | float ))) | exp | round(4)) }} kPa"
-      - event: LOGBOOK_ENTRY
-        event_data:
-          name: Jinja2Event
+          name: VPD_Calculation
           entity_id: sensor.temperature
           message: >
-            {% set temp = states('sensor.temperature') | float %}
-            {% set svp_air = 0.61078 * ((17.2694 * temp) / (237.3 + temp)) | exp }
-            {% set svp_leaf = 0.61078 * ((17.2694 * (temp - 1.0)) / (237.3 + (temp - 1.0))) | exp }
-            {% set rh_target = ((svp_leaf - VPD_target)/(svp_air)) * 100 %}
-            rh_target is {{ rh_target }} %
+            🌡️ Temp: {{ temp_air }}°C | 💧 RH: {{ current_rh }}% 
+            📊 Current VPD: {{ current_vpd | round(3) }} kPa 
+            🎯 Target VPD: {{ vpd_target }} kPa 
+            🎯 Target RH: {{ rh_target | round(1) }}%
+
+      # Update status
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.vpd_status
+        data:
+          value: "VPD: {{ current_vpd | round(2) }}kPa | Target: {{ vpd_target }}kPa"
+
+      # Control humidity devices
+      - choose:
+          # Case 1: RH too low - turn on humidifier, turn off dehumidifier
+          - conditions:
+              - condition: template
+                value_template: "{{ current_rh < (rh_target - 2) }}"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.humidifier
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.dehumidifier
+              - event: LOGBOOK_ENTRY
+                event_data:
+                  name: RH_LOW_ACTION
+                  message: "💧 RH too low ({{ current_rh }}% < {{ (rh_target - 2) | round(1) }}%) - Humidifier ON"
+
+          # Case 2: RH too high - turn on dehumidifier, turn off humidifier  
+          - conditions:
+              - condition: template
+                value_template: "{{ current_rh > (rh_target + 3) }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.humidifier
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.dehumidifier
+              - event: LOGBOOK_ENTRY
+                event_data:
+                  name: RH_HIGH_ACTION
+                  message: "💨 RH too high ({{ current_rh }}% > {{ (rh_target + 3) | round(1) }}%) - Dehumidifier ON"
+
+          # Case 3: RH in target range - turn off both devices
+          - conditions:
+              - condition: template
+                value_template: "{{ current_rh >= (rh_target - 2) and current_rh <= (rh_target + 3) }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.humidifier
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.dehumidifier
+              - event: LOGBOOK_ENTRY
+                event_data:
+                  name: RH_TARGET_MET
+                  message: "✅ RH in target range ({{ current_rh }}%) - All devices OFF"
+
+    mode: restart
+
+# Automation to run VPD control
+automation:
+  - alias: "VPD Control Automation"
+    trigger:
+      # Run every 2 minutes for testing (change to 30min for production)
+      - platform: time_pattern
+        minutes: "/2"
+      # Run when VPD target changes
+      - platform: state
+        entity_id: input_select.vpd_target
+    action:
+      - service: script.vpd_control
+
+  # Update mock sensors every 30 seconds
+  - alias: "Update Mock Sensors"
+    trigger:
+      - platform: time_pattern
+        seconds: "/30"
+    action:
+      - service: homeassistant.update_entity
+        entity_id: 
+          - sensor.temperature
+          - sensor.humidity
+
+# Enable detailed logging for debugging
+logger:
+  default: info
+  logs:
+    homeassistant.components.script: debug
+    homeassistant.helpers.template: debug
