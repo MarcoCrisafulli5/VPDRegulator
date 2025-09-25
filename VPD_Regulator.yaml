@@ -1,0 +1,15 @@
+# Example configuration.yaml entry
+script:
+  message_temperature:
+    sequence:
+      # This is Home Assistant Script Syntax
+      - event: LOGBOOK_ENTRY
+        event_data:
+          name: Get_Temperature
+          message: "Temperature is {{ states('sensor.temperature') | float - 1.0 }}°C"
+          entity_id: sensor.temperature
+          domain: temperature
+      - event: SVP_AIR
+        event_data:
+          name: Calculate_SVP
+          message: "SVP is {{ (0.61078 * 10 ** ((7.5 * (states('sensor.temperature') | float - 1,0)) / (237.3 + (states('sensor.temperature') | float - 1,0)))) | round(2) }} hPa"
