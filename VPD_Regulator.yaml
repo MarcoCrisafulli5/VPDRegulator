@@ -128,7 +128,7 @@ automation:
     trigger:
       # Run every 2 minutes for testing (change to 30min for production)
       - platform: time_pattern
-        minutes: "/2"
+        seconds: "/30"
       # Run when VPD target changes
       - platform: state
         entity_id: input_select.vpd_target
